@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 import chainer
 import chainer.functions as F
+import copy
 from chainer import optimizers, cuda, serializers, utils
 from chainer import Variable
 from vocabulary import Vocabulary
@@ -15,12 +16,10 @@ def parse_args():
     parser.add_argument("source", type=str)
     parser.add_argument("target", type=str)
     parser.add_argument("mode", type=str, help="train mode or test mode")
-    parser.add_argument("--vocabulary_size", dest="input_size", type=int, default=1000)
-    parser.add_argument("--embed_size", dest="embed_size", type=int, default=1000)
-    parser.add_argument("--hidden_size", dest="hidden_size", type=int, default=1000,
+    parser.add_argument("--vocabulary_size", dest="input_size", type=int, default=10000)
+    parser.add_argument("--embed_size", dest="embed_size", type=int, default=100)
+    parser.add_argument("--hidden_size", dest="hidden_size", type=int, default=200,
                         help="the number of cells at hidden layer")
-    parser.add_argument("--output_size", dest="output_size", type=int, default=1000,
-                        help="the number of cells at output layer")
     parser.add_argument("--unit", dest="num_unit", type=int, default=2, help="the number of units")
     parser.add_argument("--layer", dest="num_layer", type=int, default=1, help="the number of layers in hidden layer")
     return parser.parse_args()
@@ -59,12 +58,19 @@ def train(data, model, source_vocabulary, target_vocabulary):
     opt = optimizers.SGD()  # 確率勾配法
     opt.setup(model)        # 初期化
 
-    for source_sentence, target_sentence in data:
-        opt.zero_grads()
-        loss = forward(model, source_sentence, target_sentence, source_vocabulary, target_vocabulary, True)
-        loss.backward()            # 誤差逆伝播
-        opt.clip_grads(10)         # 10より大きい勾配を抑制
-        opt.update()               # パラメタ更新
+    data = list(data)
+    for i in range(100):
+        #tmp_data = data_list[:]
+        # TODO: generatorをここでつくる
+        total_loss = 0.0
+        for source_sentence, target_sentence in data:
+            opt.zero_grads()
+            loss = forward(model, source_sentence, target_sentence, source_vocabulary, target_vocabulary, True)
+            total_loss += loss.data
+            loss.backward()            # 誤差逆伝播
+            opt.clip_grads(10)         # 10より大きい勾配を抑制
+            opt.update()               # パラメタ更新
+        print("epoch: %3d, loss: %f" % (i, total_loss))
 
     # save
     serializers.save_npz("model", model)
@@ -72,7 +78,7 @@ def train(data, model, source_vocabulary, target_vocabulary):
 
 
 def test(model, source_data, source_vocabulary, target_vocabulary):
-    #model = serializers.load_npz("model", EncoderDecoder(args, source_vocabulary, target_vocabulary))
+    #serializers.load_npz("model", model)
     #opt = serializers.load_npz("state", optimizers.SGD())
 
     data = []
@@ -127,7 +133,7 @@ def forward(model, source_sentence, target_sentence, source_vocabulary, target_v
             t = Variable(np.array(word_id, dtype=np.int32))
             loss += F.softmax_cross_entropy(y, t)
             y = t
-        print(loss.data)
+        #print(loss.data)
         return loss
 
     else:
@@ -168,6 +174,7 @@ def main():
         # 引数からモデルを定義
         train(data_gen, model, v1, v2)
     else:
+        serializers.load_npz("model", model)
         test(model, source_gen, v1, v2)
 
 
