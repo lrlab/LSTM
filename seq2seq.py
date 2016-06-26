@@ -2,11 +2,12 @@
 # coding: UTF-8
 import argparse
 import numpy as np
+
 import chainer
 import chainer.functions as F
-import copy
-from chainer import optimizers, cuda, serializers, utils
+from chainer import optimizers, serializers
 from chainer import Variable
+
 from vocabulary import Vocabulary
 
 
@@ -16,29 +17,33 @@ def parse_args():
     parser.add_argument("source", type=str)
     parser.add_argument("target", type=str)
     parser.add_argument("mode", type=str, help="train mode or test mode")
-    parser.add_argument("--vocabulary_size", dest="input_size", type=int, default=10000)
+    parser.add_argument("--epoch", dest="epoch", type=int, default=10)
     parser.add_argument("--embed_size", dest="embed_size", type=int, default=100)
     parser.add_argument("--hidden_size", dest="hidden_size", type=int, default=200,
                         help="the number of cells at hidden layer")
-    parser.add_argument("--unit", dest="num_unit", type=int, default=2, help="the number of units")
-    parser.add_argument("--layer", dest="num_layer", type=int, default=1, help="the number of layers in hidden layer")
     return parser.parse_args()
 
 
 def text_generator(file_name):
     with open(file_name, "r") as f:
         for line in f:
+            print(line)
             yield line
-            # for文内で呼び出すと、毎回次の数を出力する。
 
 
 class EncoderDecoder(chainer.Chain):
-    def __init__(self, args, src_vocabulary, trg_vocabulary):
-        args = parse_args()
-        self.src_size = len(src_vocabulary.vocabulary)
+    def __init__(self, args, src_file, trg_file):
+
+        self.src_vocabulary = Vocabulary()
+        self.src_vocabulary.make_dictionary(src_file)
+
+        self.trg_vocabulary = Vocabulary()
+        self.trg_vocabulary.make_dictionary(trg_file)
+
+        self.src_size = len(self.src_vocabulary.wtoi)
         self.embed_size = args.embed_size
         self.hidden_size = args.hidden_size
-        self.trg_size = len(trg_vocabulary.vocabulary)
+        self.trg_size = len(self.trg_vocabulary.wtoi)
 
         super(EncoderDecoder, self).__init__(
             # encoder
@@ -53,19 +58,20 @@ class EncoderDecoder(chainer.Chain):
         )
 
 
-def train(data, model, source_vocabulary, target_vocabulary):
+def train(args, model):
+
     # setup optimizer
     opt = optimizers.SGD()  # 確率勾配法
     opt.setup(model)        # 初期化
 
-    data = list(data)
-    for i in range(100):
-        #tmp_data = data_list[:]
-        # TODO: generatorをここでつくる
+    for i in range(args.epoch):
+        src_generator = text_generator(args.source)
+        trg_generator = text_generator(args.target)
+
         total_loss = 0.0
-        for source_sentence, target_sentence in data:
+        for src_sentence, trg_sentence in zip(src_generator, trg_generator):
             opt.zero_grads()
-            loss = forward(model, source_sentence, target_sentence, source_vocabulary, target_vocabulary, True)
+            loss = forward(model, src_sentence, trg_sentence, True)
             total_loss += loss.data
             loss.backward()            # 誤差逆伝播
             opt.clip_grads(10)         # 10より大きい勾配を抑制
@@ -74,16 +80,17 @@ def train(data, model, source_vocabulary, target_vocabulary):
 
     # save
     serializers.save_npz("model", model)
-    serializers.save_npz("state", opt)
+    # TODO : save args
+    #serializers.save_npz("state", opt)
 
 
-def test(model, source_data, source_vocabulary, target_vocabulary):
+def test(args, model):
     #serializers.load_npz("model", model)
     #opt = serializers.load_npz("state", optimizers.SGD())
 
     data = []
-    for source_sentence in source_data:
-        data.append(forward(model, source_sentence, None, source_vocabulary, target_vocabulary, False))
+    for source_sentence in text_generator(args.source):
+        data.append(forward(model, source_sentence, None, False))
         with open("output.txt", "w") as f:
             for line in data:
                 for word in line:
@@ -92,15 +99,12 @@ def test(model, source_data, source_vocabulary, target_vocabulary):
     return data
 
 
-# source: English e.g. ["he", "runs", "fast", "<EOS>"]
-# target: French e.g. ["il", "court", "vite", "<EOS>"]
-# train: learn or generate
-def forward(model, source_sentence, target_sentence, source_vocabulary, target_vocabulary, training):
+def forward(model, source_sentence, target_sentence, training):
 
     # convert word to ID, add <End of Sentence>
-    source = source_vocabulary.convert(source_sentence)
-    if target_sentence is not None:
-        target = target_vocabulary.convert(target_sentence)
+    source = model.src_vocabulary.convert(source_sentence)
+    if target_sentence:
+        target = model.trg_vocabulary.convert(target_sentence)
 
     # hidden state
     c = Variable(np.zeros((1, model.hidden_size), dtype=np.float32))  # hidden state
@@ -119,7 +123,7 @@ def forward(model, source_sentence, target_sentence, source_vocabulary, target_v
         c, p = F.lstm(c, lstm_input)
 
     # decoder
-    EOS = target_vocabulary.word_to_id("<EOS>")
+    EOS = model.trg_vocabulary.word_to_id("<EOS>")
     q = p
     y = Variable(np.array([EOS], dtype=np.int32))
 
@@ -145,11 +149,10 @@ def forward(model, source_sentence, target_sentence, source_vocabulary, target_v
             y = model.w_qy(q)
             word_id = np.argmax(y.data, axis=1)
             y = Variable(np.array(word_id, dtype=np.int32))
-            #exit()
             if word_id[0] == EOS:
-                sentence.append(target_vocabulary.id_to_word(word_id[0]))
+                sentence.append(model.trg_vocabulary.id_to_word(word_id[0]))
                 break
-            sentence.append(target_vocabulary.id_to_word(word_id[0]))
+            sentence.append(model.trg_vocabulary.id_to_word(word_id[0]))
 
         print(sentence)
         return sentence
@@ -157,26 +160,15 @@ def forward(model, source_sentence, target_sentence, source_vocabulary, target_v
 
 def main():
     args = parse_args()
-    source_file = args.source
-    v1 = Vocabulary()
-    v2 = Vocabulary()
-    v1.make_dictionary(source_file)
-    target_file = args.target
-    v2.make_dictionary(target_file)
-
-    source_gen = text_generator(source_file)
-    target_gen = text_generator(target_file)
-    data_gen = zip(source_gen, target_gen)
-
-    model = EncoderDecoder(args, v1, v2)
+    model = EncoderDecoder(args, args.source, args.target)
 
     if args.mode == "train":
         # 引数からモデルを定義
-        train(data_gen, model, v1, v2)
+        train(args, model)
     else:
+        # TODO : load args
         serializers.load_npz("model", model)
-        test(model, source_gen, v1, v2)
-
+        test(args, model)
 
 
 if __name__ == '__main__':
