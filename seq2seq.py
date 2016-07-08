@@ -97,7 +97,7 @@ def test(args, model):
     data = []
     for source_sentence in text_generator(args.source):
         data.append(forward(model, source_sentence, None, False))
-        with open("output.txt", "w") as f:
+        with open("output$.txt", "w") as f:
             for line in data:
                 for word in line:
                     f.write(word + ' ')
